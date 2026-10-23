@@ -1,0 +1,134 @@
+{
+  "playbook_id": "NDA-BASELINE",
+  "version": "1.0",
+  "name": "Baseline NDA review playbook (synthetic, for prototype use)",
+  "classification": { "title_weight": 3, "body_weight": 1, "min_score": 2, "margin": 2 },
+  "clause_catalog": [
+    {
+      "clause_type": "confidentiality",
+      "title_keywords": ["confidential"],
+      "body_keywords": ["shall protect", "shall not disclose", "shall keep", "confidential information"]
+    },
+    {
+      "clause_type": "permitted_use",
+      "title_keywords": ["purpose", "permitted use", "use of"],
+      "body_keywords": ["solely", "may use", "shall use", "only for"]
+    },
+    {
+      "clause_type": "exclusions",
+      "title_keywords": ["exclusion", "exception", "not confidential"],
+      "body_keywords": ["does not include", "publicly available", "already known", "independently developed"]
+    },
+    {
+      "clause_type": "duration",
+      "title_keywords": ["duration", "period", "survival", "term of"],
+      "body_keywords": ["shall continue for", "remain in effect", "year", "month"]
+    },
+    {
+      "clause_type": "termination",
+      "title_keywords": ["terminat"],
+      "body_keywords": ["may terminate", "terminate this agreement", "notice of termination"]
+    },
+    {
+      "clause_type": "return_destruction",
+      "title_keywords": ["return", "destruction", "destroy"],
+      "body_keywords": ["shall return", "destroy", "destruction", "delete"]
+    },
+    {
+      "clause_type": "liability",
+      "title_keywords": ["liability", "indemn", "remed", "damages"],
+      "body_keywords": ["liable", "indemnify", "damages", "injunctive"]
+    },
+    {
+      "clause_type": "governing_law",
+      "title_keywords": ["governing law", "jurisdiction", "applicable law"],
+      "body_keywords": ["governed by", "laws of", "jurisdiction"]
+    },
+    { "clause_type": "other", "title_keywords": [], "body_keywords": [] }
+  ],
+  "rules": [
+    {
+      "rule_id": "R1",
+      "title": "Confidentiality obligation",
+      "clause_type": "confidentiality",
+      "check_type": "presence",
+      "params": {
+        "required_patterns": [
+          "\\bshall\\s+(?:not\\s+disclose|protect|keep|maintain|hold)",
+          "\\bmust\\s+(?:not\\s+disclose|protect|keep)",
+          "\\bagrees?\\s+(?:not\\s+to\\s+disclose|to\\s+(?:protect|keep|hold))"
+        ]
+      },
+      "severity": "high",
+      "on_missing_clause": "deviation",
+      "guidance": "Add a clause obliging the receiving party to protect and not disclose confidential information.",
+      "llm_criterion": "Does the clause oblige the receiving party to keep the disclosed information confidential and not disclose it to third parties?",
+      "llm_on_review_required": true
+    },
+    {
+      "rule_id": "R2",
+      "title": "Permitted use is limited to a defined purpose",
+      "clause_type": "permitted_use",
+      "check_type": "scope",
+      "params": {
+        "limiting_terms": ["solely", "only", "exclusively"],
+        "purpose_terms": ["purpose", "evaluate", "evaluating", "evaluation", "assessing", "negotiating", "negotiation", "discussing"],
+        "broad_terms": ["any purpose", "any business purpose", "for its own business", "its business purposes", "any reason"]
+      },
+      "severity": "high",
+      "on_missing_clause": "deviation",
+      "guidance": "Limit use of confidential information to a specific, stated purpose.",
+      "llm_criterion": "Does the clause limit use of the confidential information to a specific, stated purpose, rather than any purpose the receiving party chooses?",
+      "llm_on_review_required": true
+    },
+    {
+      "rule_id": "R3",
+      "title": "Confidentiality duration meets policy",
+      "clause_type": "duration",
+      "check_type": "presence_and_policy",
+      "params": { "min_months": null },
+      "severity": "medium",
+      "on_missing_clause": "deviation",
+      "guidance": "Confirm the duration with the reviewer. Set params.min_months in this playbook to enable an automatic pass/deviation.",
+      "llm_criterion": "Does the clause state a fixed period, in years or months, for the confidentiality obligations?",
+      "llm_on_review_required": false
+    },
+    {
+      "rule_id": "R4",
+      "title": "Return and destruction of information",
+      "clause_type": "return_destruction",
+      "check_type": "coverage",
+      "params": {
+        "required_groups": [
+          ["return", "returned", "returning"],
+          ["destroy", "destroyed", "destruction", "delete", "deleted", "erase", "erased"]
+        ]
+      },
+      "severity": "medium",
+      "on_missing_clause": "deviation",
+      "guidance": "Ask for both return and destruction of confidential information on request or termination.",
+      "llm_criterion": "Does the clause require the receiving party to both return and destroy (or delete) the confidential information?",
+      "llm_on_review_required": false
+    },
+    {
+      "rule_id": "R5",
+      "title": "Governing law names a specific jurisdiction",
+      "clause_type": "governing_law",
+      "check_type": "specificity",
+      "params": {
+        "jurisdictions": [
+          "India", "Delhi", "Maharashtra", "Karnataka", "Tamil Nadu", "Gujarat", "Telangana", "Kerala",
+          "West Bengal", "Odisha", "Uttar Pradesh", "England", "England and Wales", "United Kingdom",
+          "Scotland", "Ireland", "Singapore", "Australia", "Canada", "Germany", "France",
+          "United Arab Emirates", "United States", "Delaware", "California", "New York", "Texas",
+          "Florida", "Massachusetts", "Illinois", "Virginia", "New Jersey"
+        ]
+      },
+      "severity": "medium",
+      "on_missing_clause": "deviation",
+      "guidance": "Name a specific governing law or jurisdiction instead of 'applicable law'.",
+      "llm_criterion": "Does the clause name a specific country, state or jurisdiction whose law governs the agreement, rather than just 'applicable law'?",
+      "llm_on_review_required": false
+    }
+  ]
+}
