@@ -20,7 +20,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health", tags=["system"])
     def health():
-        return success_response({"status": "ok"}, "Healthy")
+        # `llm` shows whether Ollama is switched on and reachable (see README).
+        return success_response({"status": "ok", "llm": app.state.container.llm_status()}, "Healthy")
 
     return app
 

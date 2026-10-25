@@ -45,11 +45,13 @@ class OllamaError(RuntimeError):
 
 class OllamaResolver:
     configured = True
+    provider = "ollama"
     prompt_version = PROMPT_VERSION
 
     def __init__(self, base_url: str, model: str, timeout_seconds: float = 120.0, num_ctx: int = 4096):
         self.model = model
-        self._url = base_url.rstrip("/") + "/api/chat"
+        self._base_url = base_url.rstrip("/")
+        self._url = self._base_url + "/api/chat"
         self._timeout = timeout_seconds
         self._num_ctx = num_ctx
         # Local server: ignore any HTTP(S)_PROXY settings in the environment.
@@ -70,6 +72,16 @@ class OllamaResolver:
             ],
         }
         return parse_verdict(self._chat(payload))
+
+    def check(self, timeout_seconds: float = 3.0) -> dict:
+        """Is Ollama reachable, and is the configured model downloaded? Never raises."""
+        try:
+            with self._opener.open(self._base_url + "/api/tags", timeout=timeout_seconds) as response:
+                names = [m.get("name", "") for m in json.loads(response.read()).get("models", [])]
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, AttributeError, TypeError):
+            return {"reachable": False, "model_available": False}
+        available = self.model in names or f"{self.model}:latest" in names
+        return {"reachable": True, "model_available": available}
 
     def _chat(self, payload: dict) -> str:
         request = urllib.request.Request(

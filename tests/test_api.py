@@ -36,6 +36,11 @@ class ReviewApiTests(unittest.TestCase):
             self.assertIn("code", body["error"])
         return body
 
+    def test_health_reports_llm_status(self):
+        body = self.assert_envelope(self.client.get("/health"), 200, True)
+        self.assertEqual(body["data"]["status"], "ok")
+        self.assertEqual(body["data"]["llm"], {"provider": "none", "configured": False})
+
     def test_post_review(self):
         body = self.assert_envelope(self.create_review(), 201, True)
         self.assertEqual(set(body["data"]), {"review_id", "status", "playbook_version"})

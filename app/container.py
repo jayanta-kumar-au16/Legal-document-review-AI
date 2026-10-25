@@ -18,6 +18,20 @@ class Container:
     playbooks: PlaybookRepository
     reviews: InMemoryReviewRepository
     review_service: ReviewService
+    resolver: ClauseResolver
+
+    def llm_status(self) -> dict:
+        """What the app is configured to use, plus (for Ollama) whether it is reachable right now."""
+        status = {
+            "provider": getattr(self.resolver, "provider", "custom"),
+            "configured": bool(self.resolver.configured),
+        }
+        if self.resolver.configured:
+            status["model"] = self.resolver.model
+            check = getattr(self.resolver, "check", None)
+            if callable(check):
+                status.update(check())
+        return status
 
 
 def build_resolver(settings: Settings) -> ClauseResolver:
@@ -40,5 +54,6 @@ def build_container(settings: Settings, resolver: ClauseResolver | None = None) 
     reviews = InMemoryReviewRepository()
     if settings.seed_sample_document:
         seed_sample_document(documents)
-    service = ReviewService(documents, playbooks, reviews, resolver or build_resolver(settings))
-    return Container(documents, playbooks, reviews, service)
+    resolver = resolver or build_resolver(settings)
+    service = ReviewService(documents, playbooks, reviews, resolver)
+    return Container(documents, playbooks, reviews, service, resolver)
