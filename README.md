@@ -1,122 +1,373 @@
-# NDA Review API (prototype)
+# Legal Document Upload and Clause Extraction API
 
-Three endpoints, built with FastAPI. Clause finding and rule checks use plain code; an LLM can be
-plugged in later for ambiguous clauses only. AI-assisted support, not legal advice.
+FastAPI prototype for uploading PDF/DOCX documents, extracting text, and organizing clauses using manual processing or a local LLM through Ollama.
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/reviews` | Run a review for a document (+ optional playbook). Synchronous. |
-| `GET /api/reviews/{id}` | Fetch the full report. |
-| `PATCH /api/reviews/{id}/findings/{findingId}` | Save the reviewer's decision and comment. |
+Python 3.11+ is required. Manual processing does not require an LLM. LLM processing uses Ollama and does not require an OpenAI API key.
 
-Not in this build (owned by others): upload, text preview, export.
+Use synthetic or approved public documents.
 
-## Run
+## Start on Windows PowerShell
 
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload          # docs at http://127.0.0.1:8000/docs
-python -m unittest discover -s tests -t . -v
+Open a terminal in the project directory and run:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-A fictional sample NDA is seeded as `doc_sample_nda` (set `SEED_SAMPLE_DOCUMENT=false` to disable).
+Using the virtual environment interpreter directly avoids activation policy issues.
+
+Open http://127.0.0.1:8000/docs to test through Swagger UI.
+
+## Start on macOS or Linux
 
 ```bash
-curl -X POST localhost:8000/api/reviews -H 'content-type: application/json' \
-     -d '{"document_id": "doc_sample_nda"}'
-curl localhost:8000/api/reviews/<review_id>
-curl -X PATCH localhost:8000/api/reviews/<review_id>/findings/F-002 -H 'content-type: application/json' \
-     -d '{"status": "accepted", "comment": "Ask for destruction wording"}'
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --reload
 ```
 
-## Response envelope (every endpoint, success and error)
+## Document conversion
+
+DOCX uploads are converted to PDF using LibreOffice before text extraction. PDF uploads are processed directly.
+
+LibreOffice must be available on PATH, or its executable path must be configured:
+
+```powershell
+$env:LIBREOFFICE_PATH = "C:\Program Files\LibreOffice\program\soffice.exe"
+```
+
+DOCX page references refer to the converted PDF.
+
+## Ollama configuration
+
+LLM extraction calls Ollama's `/api/chat` endpoint.
+
+The configured defaults are:
+
+```text
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:4b
+OLLAMA_TIMEOUT_SECONDS=180
+```
+
+Ollama must be running, and the selected model must be available locally.
+
+These values can be configured in `.env`:
+
+```dotenv
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:4b
+OLLAMA_TIMEOUT_SECONDS=180
+```
+
+The clause service loads environment settings using `python-dotenv`.
+
+## APIs
+
+### GET /health
+
+Returns:
 
 ```json
-{ "statusCode": 201, "success": true,  "message": "Review completed",
-  "data": { "review_id": "rev_ab12cd34ef56", "status": "completed", "playbook_version": "1.0" },
-  "error": null }
-
-{ "statusCode": 404, "success": false, "message": "Document 'x' was not found",
-  "data": null, "error": { "code": "DOCUMENT_NOT_FOUND", "details": null } }
+{
+  "status": "ok"
+}
 ```
 
-`data` follows the spec: create -> `review_id, status, playbook_version`; get -> `metadata, clauses,
-rule_results, findings, warnings`; patch -> `finding_id, status, comment`. Validation errors return
-`error.code = "VALIDATION_ERROR"` with `details: [{field, message}]`.
+### POST /api/documents
 
-Error codes: `DOCUMENT_NOT_FOUND` 404, `PLAYBOOK_NOT_FOUND` 404, `REVIEW_NOT_FOUND` 404,
-`FINDING_NOT_FOUND` 404, `DOCUMENT_NOT_READY` 409, `DOCUMENT_TEXT_EMPTY` 422,
-`NO_CLAUSES_DETECTED` 422, `VALIDATION_ERROR` 422, `INTERNAL_ERROR` 500.
+Accepts a multipart upload using the field name `file`.
 
-## Folders
+Validates the document, converts DOCX to PDF when needed, extracts text, and saves the document files.
 
-```
-app/
-  main.py            create_app(), router, handlers
-  container.py       wires repositories + service (one per app)
-  api/               routes/reviews.py, deps.py            (FastAPI only lives here + main/handlers)
-  core/              config, exceptions, handlers
-  schemas/           common.py (envelope), review.py, playbook.py
-  services/          segmenter -> classifier -> checks -> rule_engine -> findings -> review_service
-                     llm_client.py (LLM seam), ollama_resolver.py (free local llama3.1)
-  repositories/      document_repo, playbook_repo, review_repo (in-memory)
-  utils/             response, text, numbers, ids, clock
-config/playbooks/    nda_baseline.json   <- rules, keywords, thresholds
-tests/
-```
+Returns HTTP `201 Created`:
 
-## Hooking up the upload endpoint
-
-The upload developer only has to store the extracted text:
-
-```python
-container.documents.add(StoredDocument(
-    document_id=..., file_name=..., extraction_status="success",   # or "failed"
-    pages=[PageText(page=1, text="..."), ...]))                    # page=None for DOCX
+```json
+{
+  "status": "success",
+  "message": "Document uploaded and text extracted successfully.",
+  "data": {
+    "document_id": "efbe71a7-6f96-4f24-9518-158aef92c37c",
+    "file_name": "sample_nda.docx",
+    "source_type": "docx",
+    "reference_document": "converted_pdf",
+    "extraction_status": "completed",
+    "page_count": 1,
+    "extracted_page_count": 1,
+    "segment_count": 1,
+    "warnings": []
+  },
+  "request_id": "req_example"
+}
 ```
 
-## Changing policy without code
+`reference_document` is `original_pdf` for PDF uploads and `converted_pdf` for DOCX uploads.
 
-Edit `config/playbooks/nda_baseline.json`: keywords per clause type, `min_months` for R3, the
-jurisdiction list for R5, severity, guidance, and what happens when a clause is missing
-(`on_missing_clause`). The file is validated at startup; a bad file stops the app with a clear message.
-Bump `version` when you change it; the version is saved in every review.
+If some pages contain no extractable text, `extraction_status` is `completed_with_warnings`.
 
-## Local LLM fallback (free): Ollama + llama3.1
+### GET /api/documents/{document_id}/text
 
-Off by default. Both Ollama (MIT) and Llama 3.1 (Llama 3.1 Community License, royalty-free) are free to use.
-The default `llama3.1` tag is the 8B build, about 4.9 GB.
+Processes the stored text into clauses.
 
-```bash
-ollama pull llama3.1                    # once; needs a recent Ollama (JSON-schema "format" support)
-LLM_PROVIDER=ollama uvicorn app.main:app --reload
+Query parameters:
+
+| Parameter | Values | Default |
+|---|---|---|
+| `method` | `manual`, `llm` | `manual` |
+
+Examples:
+
+```text
+GET /api/documents/{document_id}/text?method=manual
+GET /api/documents/{document_id}/text?method=llm
 ```
 
-| Env var | Default |
+Both methods return HTTP `200 OK` with the same public response structure:
+
+```json
+{
+  "status": "success",
+  "message": "Document clauses extracted successfully.",
+  "data": {
+    "document_id": "efbe71a7-6f96-4f24-9518-158aef92c37c",
+    "file_name": "sample_nda.docx",
+    "source_type": "docx",
+    "reference_document": "converted_pdf",
+    "clause_count": 1,
+    "clauses": [
+      {
+        "clause_type": "confidentiality",
+        "status": "found",
+        "evidence": "The Receiving Party shall protect all confidential information and shall not disclose it to third parties without prior written consent.",
+        "summary": "The receiving party must protect confidential information and obtain prior written consent before disclosure to third parties.",
+        "source": {
+          "page": 1,
+          "section": "Clause 2"
+        }
+      }
+    ],
+    "warnings": []
+  },
+  "request_id": "req_example"
+}
+```
+
+The example contains one clause. Actual results depend on the supplied document.
+
+#### Manual processing
+
+- Recognizes supported headings such as `Clause 2 — Confidentiality`.
+- Derives `clause_type` from the heading.
+- Collects the body text under each detected heading.
+- Returns `summary: null`.
+- Preserves text before the first recognized heading in internal `unclassified_blocks`.
+- Returns warnings when text is unclassified or supported headings are not found.
+
+Manual processing does not infer arbitrary heading formats or semantic categories.
+
+#### LLM processing
+
+- Uses the configured Ollama model to identify clauses.
+- Supports content-based classification with dynamic clause types.
+- Requests a separate factual summary for each clause.
+- Verifies that each clause body matches a contiguous source excerpt after whitespace normalization.
+- Enforces document order during evidence matching.
+- Calculates source pages in Python from the matched evidence.
+
+Evidence matching verifies copied text. It does not independently verify the accuracy of generated summaries or classifications.
+
+#### Clause fields
+
+| Field | Meaning |
 |---|---|
-| `LLM_PROVIDER` | `none` (or `ollama`) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` |
-| `OLLAMA_MODEL` | `llama3.1` |
-| `OLLAMA_TIMEOUT_SECONDS` | `120` |
-| `OLLAMA_NUM_CTX` | `4096` |
+| `clause_type` | Dynamic category; there is no fixed list of clause types. |
+| `status` | Currently `found` for extracted clauses. |
+| `evidence` | Extracted clause body. |
+| `summary` | LLM-generated summary, or `null` for manual processing. |
+| `source.page` | First evidence page; `null` when unavailable. |
+| `source.section` | Clause reference built from the extracted number; `null` when no number exists. |
 
-When it is used: only for (1) an ambiguous clause, and (2) a rule with `"llm_on_review_required": true`
-(R1, R2) when the code check could not decide. Each call sends one clause plus one question
-(`llm_criterion` in the playbook), with temperature 0 and a fixed seed. The answer must be JSON and must
-quote a sentence that exists in the clause; otherwise it is rejected and the rule goes to human review
-with a warning (`LLM_ERROR`, `LLM_INVALID_OUTPUT`, `EVIDENCE_UNVERIFIED`). The sample NDA makes 0 LLM calls.
-`metadata.llm_calls`, `model` and `prompt_version` are recorded in every review.
+The schema permits `not_found`, but the current extraction logic does not check for missing required clause categories.
 
-An 8B model is weaker than hosted models: expect misses and wrong verdicts on tricky clauses, and
-some answers rejected for imperfect quotes. Measure it on the golden set before relying on it.
-Responses can take several seconds per clause on CPU.
+Both methods share the same response fields. Their clause boundaries, classifications, and warnings may differ.
 
-## Behaviour worth knowing
+Implementation details such as provider, model, prompt version, and classification basis are not included in the public clause response.
 
-- One result per rule, always. A missing clause follows `on_missing_clause`; it is never a silent pass.
-- Without the LLM, an ambiguous clause becomes `review_required` plus a warning. Another provider can be
-  added by implementing `ClauseResolver` in `services/llm_client.py`.
-- A document with no detectable clause headings returns `NO_CLAUSES_DETECTED` instead of a misleading report.
-- Storage is in memory (lost on restart). Swap the repositories for SQLite/JSON when needed.
-- Clause summaries are extractive (first sentence); the LLM is not used for summaries.
-- `presence_and_policy` currently reads durations (`min_months`); other check types are generic.
+## Swagger testing
+
+1. Open http://127.0.0.1:8000/docs.
+2. Expand `POST /api/documents`.
+3. Click **Try it out**.
+4. Select a PDF or DOCX for the `file` field.
+5. Execute the request.
+6. Copy `data.document_id` from the response.
+7. Expand `GET /api/documents/{document_id}/text`.
+8. Enter the document ID and select `manual` or `llm`.
+9. Execute the request.
+
+## PowerShell examples
+
+Upload a document:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/api/documents" -F "file=@test-data/sample_nda.pdf"
+```
+
+Run manual extraction:
+
+```powershell
+curl.exe "http://127.0.0.1:8000/api/documents/DOCUMENT_ID/text?method=manual"
+```
+
+Run LLM extraction:
+
+```powershell
+curl.exe "http://127.0.0.1:8000/api/documents/DOCUMENT_ID/text?method=llm"
+```
+
+Save the public response locally:
+
+```powershell
+curl.exe "http://127.0.0.1:8000/api/documents/DOCUMENT_ID/text?method=manual" --output manual_response.json
+```
+
+Replace `DOCUMENT_ID` with the ID returned by the upload.
+
+## Validation and errors
+
+Default maximum upload size: 10 MiB (`10 * 1024 * 1024` bytes).
+
+The application checks:
+
+- Supported file extension.
+- Declared MIME type.
+- Non-empty content.
+- PDF readability and encryption.
+- PDF page limit.
+- DOCX archive structure and expansion limits.
+- Availability of extractable text.
+
+Generic or absent MIME types are accepted, but document parsing must still succeed.
+
+Errors use the following response structure:
+
+```json
+{
+  "status": "error",
+  "message": "Only PDF and DOCX files are supported.",
+  "data": null,
+  "error": {
+    "code": "unsupported_format"
+  },
+  "request_id": "req_example"
+}
+```
+
+Request validation errors also include `error.details`.
+
+| HTTP status | Usage |
+|---|---|
+| `404` | Document not found. |
+| `413` | Upload exceeds the configured size limit. |
+| `415` | Unsupported extension or mismatched MIME type. |
+| `422` | Invalid request, empty or unreadable document, or extraction-limit violation. |
+| `500` | Storage failure, unreadable stored extraction, or unexpected server error. |
+| `502` | Ollama request/output failure or clause evidence verification failure. |
+| `503` | Ollama or the DOCX converter is unavailable. |
+| `504` | Ollama request or DOCX conversion timeout. |
+
+Responses include an `X-Request-ID` header for correlation with the JSON request ID and application logs.
+
+## Storage
+
+The default document directory is:
+
+```text
+data/documents/{document_id}/
+```
+
+A successful upload saves:
+
+```text
+original.pdf or original.docx
+review.pdf
+extracted.json
+```
+
+`extracted.json` contains metadata and raw text segments:
+
+- `segment_id`
+- `page`
+- `text`
+
+Calling the clause endpoint saves the selected method's internal result:
+
+```text
+clauses_manual.json
+clauses_llm.json
+```
+
+These stored clause results retain internal fields and are not identical to the public response envelope. Manual results also preserve `unclassified_blocks`.
+
+Each successful clause-processing call replaces that method's saved result using a temporary file. Raw extraction remains separate.
+
+Uploads are published by renaming a staging directory after the files are written.
+
+Generated document IDs determine storage paths. The client filename is retained as metadata.
+
+Data persists across application restarts. There is no automatic expiry or deletion endpoint. Remove a document's local directory to delete its stored files.
+
+The latest supplied `main.py` does not include the earlier `/text/download` endpoint. Saved JSON can be accessed directly in the document directory.
+
+## Configuration
+
+Set these variables before starting the application:
+
+```powershell
+$env:MAX_UPLOAD_BYTES = "10485760"
+$env:DOCUMENT_STORAGE_DIR = "data/documents"
+```
+
+Ollama configuration is described above.
+
+Logs include request/document identifiers and processing or error information. Upload completion logs include duration.
+
+## Code layout
+
+- `app/main.py`: validation, PDF extraction, DOCX conversion, response mapping, storage, middleware, exception handlers, API routes, and app factory.
+- `app/schemas.py`: document, clause, success-response, and error-response schemas.
+- `app/clause_service.py`: manual clause extraction, Ollama integration, internal model schemas, and evidence verification.
+
+## Tests
+
+The existing README provides these test commands:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Run them from the project directory. Test results and coverage for the updated response schemas and Ollama changes have not been verified here.
+
+## Prototype limitations
+
+- No authentication or OCR.
+- No semantic legal review.
+- Manual extraction depends on supported heading patterns.
+- LLM summaries and classifications may be inaccurate.
+- Source matching does not establish complete clause coverage.
+- PDF reading order depends on document layout.
+- DOCX page references come from the converted PDF.
+- A single `source.page` represents the first evidence page, not all pages of a multi-page clause.
+- PDFs are limited to 100 pages.
+- Expanded DOCX contents are limited to 50 MiB and 2,000 ZIP entries.
+- DOCX conversion has a 60-second subprocess timeout.
+- Multipart parsing occurs before the endpoint's upload-size check.
+- Complex layouts and mixed text/image pages may not be fully extracted.
+
+## Documentation references
+
+- https://fastapi.tiangolo.com/tutorial/request-files/
+- https://pypdf.readthedocs.io/en/stable/user/extract-text.html

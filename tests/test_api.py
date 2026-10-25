@@ -1,85 +1,101 @@
-"""HTTP-level tests (envelope, status codes, validation). Skipped automatically when
-FastAPI / httpx are not installed (they are in requirements.txt)."""
-import unittest
-
-try:
-    from fastapi.testclient import TestClient
-
-    from app.core.config import Settings
-    from app.main import create_app
-
-    HAVE_FASTAPI = True
-except ImportError:  # pragma: no cover
-    HAVE_FASTAPI = False
-
-ENVELOPE_KEYS = {"statusCode", "success", "message", "data", "error"}
+import io
+from uuid import uuid4
+import pytest
+from docx import Document
+from fastapi.testclient import TestClient
+from pypdf import PdfWriter
+from reportlab.pdfgen import canvas
+from app.main import create_app, DOCX_MIME
 
 
-@unittest.skipUnless(HAVE_FASTAPI, "fastapi/httpx not installed")
-class ReviewApiTests(unittest.TestCase):
-    def setUp(self):
-        self.client = TestClient(create_app(Settings()), raise_server_exceptions=False)
+def pdf_bytes(text='Confidential information shall be protected.', blank_second=False):
+    out = io.BytesIO()
+    c = canvas.Canvas(out)
+    c.drawString(50, 750, text)
+    c.showPage()
+    if blank_second:
+        c.showPage()
+    c.save()
+    return out.getvalue()
 
-    def create_review(self):
-        return self.client.post("/api/reviews", json={"document_id": "doc_sample_nda"})
+@pytest.fixture
+def client(tmp_path):
+    return TestClient(create_app(tmp_path))
 
-    def assert_envelope(self, response, status, success):
-        body = response.json()
-        self.assertEqual(response.status_code, status)
-        self.assertEqual(set(body), ENVELOPE_KEYS)
-        self.assertEqual(body["statusCode"], status)
-        self.assertIs(body["success"], success)
-        if success:
-            self.assertIsNone(body["error"])
-        else:
-            self.assertIsNone(body["data"])
-            self.assertIn("code", body["error"])
-        return body
+def test_pdf_roundtrip_and_restart(client, tmp_path):
+    raw = pdf_bytes()
+    response = client.post('/api/documents', files={'file': ('nda.pdf', raw, 'application/pdf')})
+    assert response.status_code == 201
+    identifier = response.json()['document_id']
+    text = TestClient(create_app(tmp_path)).get(f'/api/documents/{identifier}/text').json()
+    assert text['segments'][0]['page'] == 1
+    assert 'Confidential information' in text['segments'][0]['text']
+    assert (tmp_path / identifier / 'original.pdf').read_bytes() == raw
 
-    def test_post_review(self):
-        body = self.assert_envelope(self.create_review(), 201, True)
-        self.assertEqual(set(body["data"]), {"review_id", "status", "playbook_version"})
-        self.assertEqual(body["data"]["status"], "completed")
+def test_docx_order_and_references(client):
+    d = Document()
+    d.add_paragraph('Before table')
+    d.add_table(rows=1, cols=1).cell(0,0).text = 'Table evidence'
+    d.add_paragraph('After table')
+    out = io.BytesIO(); d.save(out)
+    r = client.post('/api/documents', files={'file': ('nda.docx', out.getvalue(), DOCX_MIME)})
+    assert r.status_code == 201
+    result = client.get(f"/api/documents/{r.json()['document_id']}/text").json()
+    assert [s['text'] for s in result['segments']] == ['Before table','Table evidence','After table']
+    assert result['page_count'] is None
+    assert result['segments'][1]['table'] == 1
+    assert all(s['page'] is None for s in result['segments'])
 
-    def test_get_review(self):
-        review_id = self.create_review().json()["data"]["review_id"]
-        body = self.assert_envelope(self.client.get(f"/api/reviews/{review_id}"), 200, True)
-        self.assertEqual(set(body["data"]), {"metadata", "clauses", "rule_results", "findings", "warnings"})
-        self.assertEqual({r["rule_id"]: r["outcome"] for r in body["data"]["rule_results"]},
-                         {"R1": "pass", "R2": "pass", "R3": "review_required", "R4": "deviation", "R5": "deviation"})
+@pytest.mark.parametrize('name,body,mime,status', [
+ ('nda.txt', b'hello', 'text/plain',415),
+ ('nda.pdf', b'', 'application/pdf',422),
+ ('nda.pdf', b'not PDF', 'application/pdf',422),
+ ('nda.docx', b'not DOCX', DOCX_MIME,422),
+ ('nda.pdf', b'hello', 'image/png',415),
+])
+def test_invalid_files(client,name,body,mime,status):
+    assert client.post('/api/documents',files={'file':(name,body,mime)}).status_code == status
 
-    def test_patch_finding(self):
-        review_id = self.create_review().json()["data"]["review_id"]
-        response = self.client.patch(f"/api/reviews/{review_id}/findings/F-001",
-                                     json={"status": "accepted", "comment": "ok"})
-        body = self.assert_envelope(response, 200, True)
-        self.assertEqual(body["data"], {"finding_id": "F-001", "status": "accepted", "comment": "ok"})
+def test_size_limit(tmp_path):
+    client = TestClient(create_app(tmp_path, max_upload_bytes=10))
+    assert client.post('/api/documents',files={'file':('nda.pdf',b'x'*11,'application/pdf')}).status_code == 413
+    assert list(tmp_path.iterdir()) == []
 
-    def test_errors_use_the_same_envelope(self):
-        body = self.assert_envelope(self.client.post("/api/reviews", json={"document_id": "nope"}), 404, False)
-        self.assertEqual(body["error"]["code"], "DOCUMENT_NOT_FOUND")
-        body = self.assert_envelope(self.client.get("/api/reviews/rev_missing"), 404, False)
-        self.assertEqual(body["error"]["code"], "REVIEW_NOT_FOUND")
-        self.assert_envelope(self.client.get("/api/unknown"), 404, False)
+def test_blank_pdf(client):
+    w=PdfWriter(); w.add_blank_page(width=100,height=100)
+    out=io.BytesIO(); w.write(out)
+    r=client.post('/api/documents',files={'file':('blank.pdf',out.getvalue(),'application/pdf')})
+    assert r.status_code == 422
+    assert r.json()['detail']['code'] == 'no_extractable_text'
 
-    def test_validation_errors(self):
-        body = self.assert_envelope(self.client.post("/api/reviews", json={}), 422, False)
-        self.assertEqual(body["error"]["code"], "VALIDATION_ERROR")
-        self.assertEqual(body["error"]["details"][0]["field"], "document_id")
+def test_partial_pdf_warning(client):
+    r=client.post('/api/documents',files={'file':('partial.pdf',pdf_bytes(blank_second=True),'application/pdf')})
+    assert r.status_code == 201
+    assert r.json()['page_count'] == 2
+    assert r.json()['extracted_page_count'] == 1
+    assert r.json()['extraction_status'] == 'completed_with_warnings'
 
-        review_id = self.create_review().json()["data"]["review_id"]
-        url = f"/api/reviews/{review_id}/findings/F-001"
-        self.assert_envelope(self.client.patch(url, json={}), 422, False)
-        self.assert_envelope(self.client.patch(url, json={"status": "maybe"}), 422, False)
-        self.assert_envelope(self.client.patch(url, json={"status": None}), 422, False)
-        self.assert_envelope(self.client.patch(url, json={"comment": "x" * 2001}), 422, False)
+def test_encrypted_pdf(client):
+    w=PdfWriter(); w.add_blank_page(width=100,height=100); w.encrypt('secret')
+    out=io.BytesIO(); w.write(out)
+    r=client.post('/api/documents',files={'file':('encrypted.pdf',out.getvalue(),'application/pdf')})
+    assert r.status_code == 422
+    assert r.json()['detail']['code'] == 'encrypted_pdf'
 
-    def test_unknown_finding(self):
-        review_id = self.create_review().json()["data"]["review_id"]
-        response = self.client.patch(f"/api/reviews/{review_id}/findings/F-999", json={"status": "accepted"})
-        body = self.assert_envelope(response, 404, False)
-        self.assertEqual(body["error"]["code"], "FINDING_NOT_FOUND")
+def test_unknown_and_invalid_id(client):
+    assert client.get(f'/api/documents/{uuid4()}/text').status_code == 404
+    assert client.get('/api/documents/not-a-uuid/text').status_code == 422
 
+def test_missing_file(client):
+    assert client.post('/api/documents').status_code == 422
 
-if __name__ == "__main__":
-    unittest.main()
+def test_sample_nda(client):
+    from pathlib import Path
+    raw = Path('test-data/sample_nda.pdf').read_bytes()
+    r = client.post('/api/documents', files={'file':('sample_nda.pdf',raw,'application/pdf')})
+    assert r.status_code == 201
+    result = client.get(f"/api/documents/{r.json()['document_id']}/text").json()
+    text = '\n'.join(s['text'] for s in result['segments'])
+    for title in ['Purpose','Confidentiality','Duration','Return of Information','Governing Law']:
+        assert title in text
+    assert 'one year from the date of disclosure' in text
