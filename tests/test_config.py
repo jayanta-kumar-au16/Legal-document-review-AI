@@ -14,25 +14,25 @@ class EnvFileTests(unittest.TestCase):
 
     def test_basic_values_comments_quotes_and_export(self):
         loaded, env = self.load(
-            "# comment\n\nLLM_PROVIDER=ollama\nOLLAMA_MODEL = \"llama3.1\"\nexport OLLAMA_BASE_URL='http://localhost:11434'\n"
-            "OLLAMA_TIMEOUT_SECONDS=60 # seconds\nnot a pair\n"
+            "# comment\n\nLLM_PROVIDER=openai\nOPENAI_MODEL = \"gpt-4o-mini\"\nexport OPENAI_BASE_URL='https://api.openai.com/v1'\n"
+            "OPENAI_TIMEOUT_SECONDS=60 # seconds\nnot a pair\n"
         )
         self.assertTrue(loaded)
         self.assertEqual(env, {
-            "LLM_PROVIDER": "ollama",
-            "OLLAMA_MODEL": "llama3.1",
-            "OLLAMA_BASE_URL": "http://localhost:11434",
-            "OLLAMA_TIMEOUT_SECONDS": "60",
+            "LLM_PROVIDER": "openai",
+            "OPENAI_MODEL": "gpt-4o-mini",
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+            "OPENAI_TIMEOUT_SECONDS": "60",
         })
 
     def test_real_environment_variables_win(self):
-        _, env = self.load("LLM_PROVIDER=ollama\n", environ={"LLM_PROVIDER": "none"})
+        _, env = self.load("LLM_PROVIDER=openai\n", environ={"LLM_PROVIDER": "none"})
         self.assertEqual(env["LLM_PROVIDER"], "none")
 
     def test_windows_powershell_bom_and_crlf(self):
         # `Out-File -Encoding utf8` in Windows PowerShell 5.1 writes a BOM and CRLF line endings.
-        _, env = self.load("LLM_PROVIDER=ollama\r\nOLLAMA_MODEL=llama3.1\r\n", encoding="utf-8-sig")
-        self.assertEqual(env, {"LLM_PROVIDER": "ollama", "OLLAMA_MODEL": "llama3.1"})
+        _, env = self.load("LLM_PROVIDER=openai\r\nOPENAI_MODEL=gpt-4o-mini\r\n", encoding="utf-8-sig")
+        self.assertEqual(env, {"LLM_PROVIDER": "openai", "OPENAI_MODEL": "gpt-4o-mini"})
 
     def test_missing_file_is_fine(self):
         env = {}

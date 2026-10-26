@@ -32,7 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["X-Request-ID"] = f"req_{uuid.uuid4().hex}"
         return response
 
-    # Shown in the uvicorn console, so you can see at startup whether Ollama is switched on.
+    # Shown in the uvicorn console, so you can see at startup whether the LLM is switched on.
     resolver = app.state.container.resolver
     llm = f"{resolver.provider} (model {resolver.model})" if resolver.configured else "none (LLM fallback off)"
     logging.getLogger("uvicorn.error").info(
@@ -41,7 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health", tags=["system"])
     def health():
-        # `llm` shows whether Ollama is switched on and reachable (see README).
+        # `llm` shows whether the LLM is switched on and reachable (see README).
         return success_response({"status": "ok", "llm": app.state.container.llm_status()}, "Healthy")
 
     return app

@@ -1,52 +1,18 @@
 import json
 import shutil
 import tempfile
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from app.container import build_container
 from app.core.config import Settings
 from app.core.exceptions import AppError
-from app.services import clause_extractor
 from app.services.docx_converter import find_libreoffice
+from tests.fake_openai import FakeOpenAI, clauses as clauses_reply, completion
 from tests.file_factory import SAMPLE_PAGE_1, SAMPLE_PAGE_2, make_docx, make_pdf
 from tests.helpers import make_container
 
 HAVE_SOFFICE = bool(find_libreoffice())
-
-
-class FakeOllama:
-    """A tiny local server that answers /api/chat like Ollama does."""
-
-    def __init__(self, reply):
-        outer = self
-        self.reply, self.requests = reply, []
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                outer.requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-                status, body = outer.reply
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(body).encode())
-
-            def log_message(self, *args):
-                pass
-
-        self.server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-
-
-def model_reply(clauses, done_reason="stop"):
-    return 200, {"done_reason": done_reason, "message": {"content": json.dumps({"clauses": clauses})}}
 
 
 def upload_sample(container):
@@ -93,29 +59,32 @@ class ManualClauseTests(unittest.TestCase):
 
 
 class LlmClauseTests(unittest.TestCase):
-    def build(self, server_url):
-        container = build_container(Settings(ollama_base_url=server_url, ollama_timeout_seconds=5))
+    def build(self, url):
+        container = build_container(Settings(llm_provider="openai", openai_api_key="sk-test", openai_base_url=url,
+                                             openai_timeout_seconds=5, openai_max_retries=0))
         return container, upload_sample(container)
 
-    def run_with(self, reply):
-        server = FakeOllama(reply)
+    def run_with(self, *reply):
+        server = FakeOpenAI()
+        server.reply(*reply)
         self.addCleanup(server.close)
         container, document_id = self.build(server.url)
         return server, container.document_service, document_id
 
     def test_verified_clauses_are_returned_with_pages_and_summary(self):
         text = "The Receiving Party shall protect all confidential information and shall not disclose it to third parties without prior written consent."
-        server, service, document_id = self.run_with(model_reply([
+        server, service, document_id = self.run_with(clauses_reply([
             {"number": "2", "clause_type": "confidentiality", "clause_content": text, "summary": "No disclosure."}]))
         result = service.get_clauses(document_id, "llm")
         self.assertEqual((result.method, result.clause_count), ("llm", 1))
         clause = result.clauses[0]
-        self.assertEqual((clause.clause_type, clause.summary, clause.source.page, clause.source.section), ("confidentiality", "No disclosure.", 1, "Clause 2"))
-        sent = server.requests[0]
-        self.assertEqual((sent["options"]["temperature"], sent["stream"]), (0, False))
+        self.assertEqual((clause.clause_type, clause.summary, clause.source.page, clause.source.section),
+                         ("confidentiality", "No disclosure.", 1, "Clause 2"))
+        body = server.requests[0]["body"]
+        self.assertEqual((body["temperature"], body["response_format"]["json_schema"]["strict"]), (0, True))
 
     def test_invented_text_is_rejected(self):
-        _, service, document_id = self.run_with(model_reply([
+        _, service, document_id = self.run_with(clauses_reply([
             {"number": "1", "clause_type": "purpose", "clause_content": "This text is not in the document.", "summary": "x"}]))
         with self.assertRaises(AppError) as ctx:
             service.get_clauses(document_id, "llm")
@@ -123,46 +92,38 @@ class LlmClauseTests(unittest.TestCase):
 
     def test_model_problems_become_clear_errors(self):
         cases = [
-            (model_reply([], done_reason="length"), "MODEL_OUTPUT_TRUNCATED"),
-            ((200, {"message": {"content": "not json"}}), "INVALID_MODEL_OUTPUT"),
-            ((404, {"error": "model not found"}), "OLLAMA_REQUEST_FAILED"),
-            (model_reply([{"number": None, "clause_type": "Bad Type", "clause_content": "Clause 1", "summary": ""}]), "INVALID_CLAUSE_TYPE"),
+            (completion("{}", finish_reason="length"), 502, "LLM_OUTPUT_TRUNCATED"),
+            (completion("not json"), 502, "INVALID_MODEL_OUTPUT"),
+            ((401, {}), 502, "LLM_AUTH_FAILED"),
+            ((429, {}), 503, "LLM_RATE_LIMITED"),
+            (clauses_reply([{"number": None, "clause_type": "Bad Type", "clause_content": "Clause 1", "summary": ""}]), 502, "INVALID_CLAUSE_TYPE"),
         ]
-        for reply, code in cases:
+        for reply, status, code in cases:
             with self.subTest(code=code):
                 _, service, document_id = self.run_with(reply)
                 with self.assertRaises(AppError) as ctx:
                     service.get_clauses(document_id, "llm")
-                self.assertEqual(ctx.exception.code, code)
+                self.assertEqual((ctx.exception.status_code, ctx.exception.code), (status, code))
 
-    def test_ollama_not_running(self):
-        container, document_id = self.build("http://127.0.0.1:9")
+    def test_service_not_reachable(self):
+        container, document_id = self.build("http://127.0.0.1:9/v1")
         with self.assertRaises(AppError) as ctx:
             container.document_service.get_clauses(document_id, "llm")
-        self.assertEqual((ctx.exception.status_code, ctx.exception.code), (503, "OLLAMA_UNAVAILABLE"))
+        self.assertEqual((ctx.exception.status_code, ctx.exception.code), (503, "LLM_UNAVAILABLE"))
 
-    def test_input_is_not_followed_as_instructions_it_is_sent_as_data(self):
-        server, service, document_id = self.run_with(model_reply([]))
+    def test_llm_not_configured(self):
+        service = make_container().document_service
+        with self.assertRaises(AppError) as ctx:
+            service.get_clauses("doc_sample_nda", "llm")
+        self.assertEqual((ctx.exception.status_code, ctx.exception.code), (503, "LLM_NOT_CONFIGURED"))
+
+    def test_document_text_is_sent_as_data(self):
+        server, service, document_id = self.run_with(clauses_reply([]))
         service.get_clauses(document_id, "llm")
-        messages = server.requests[0]["messages"]
+        messages = server.requests[0]["body"]["messages"]
         self.assertEqual([m["role"] for m in messages], ["system", "user"])
         self.assertIn("untrusted data", messages[0]["content"])
         self.assertIn('"pages"', messages[1]["content"])
-
-    def test_timeout(self):
-        orig = clause_extractor.urllib.request.OpenerDirector.open
-
-        def slow(self, *a, **k):
-            raise TimeoutError()
-
-        clause_extractor.urllib.request.OpenerDirector.open = slow
-        try:
-            container, document_id = self.build("http://127.0.0.1:9")
-            with self.assertRaises(AppError) as ctx:
-                container.document_service.get_clauses(document_id, "llm")
-            self.assertEqual((ctx.exception.status_code, ctx.exception.code), (504, "OLLAMA_TIMEOUT"))
-        finally:
-            clause_extractor.urllib.request.OpenerDirector.open = orig
 
 
 class DiskStorageTests(unittest.TestCase):

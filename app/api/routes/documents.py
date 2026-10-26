@@ -31,10 +31,10 @@ def get_document_text(document_id: str, service: DocumentService = Depends(get_d
 @router.get("/{document_id}/clauses", response_model=ApiResponse[DocumentClausesData], summary="List the clauses in a document")
 def get_document_clauses(
     document_id: str,
-    method: Literal["manual", "llm"] = Query("manual", description="manual = plain code (default); llm = local Ollama"),
+    method: Literal["manual", "llm"] = Query("manual", description="manual = plain code (default); llm = OpenAI via the LLM gateway"),
     service: DocumentService = Depends(get_document_service),
 ):
-    """`manual` finds 'Clause N — Heading' sections without any model. `llm` asks the local Ollama model and
+    """`manual` finds 'Clause N — Heading' sections without any model. `llm` asks the LLM (OpenAI) and
     rejects any clause that is not copied word for word from the document."""
     result = service.get_clauses(document_id, method)
     message = "Clauses extracted with warnings" if result.warnings else "Clauses extracted"

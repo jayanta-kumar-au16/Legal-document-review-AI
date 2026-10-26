@@ -1,6 +1,7 @@
 import uuid
 
 from app.core.exceptions import NotFoundError, UnprocessableError
+from app.llm.gateway import LLMGateway, NoopGateway
 from app.repositories.disk_store import DiskDocumentStore
 from app.repositories.document_repo import InMemoryDocumentRepository, StoredDocument
 from app.schemas.document import (
@@ -25,14 +26,12 @@ class DocumentService:
         documents: InMemoryDocumentRepository,
         store: DiskDocumentStore | None = None,
         docx_engine: str = "python",
-        ollama_base_url: str = "http://localhost:11434",
-        ollama_model: str = "llama3.1",
-        ollama_timeout_seconds: float = 120.0,
+        gateway: LLMGateway | None = None,
     ):
         self._documents = documents
         self._store = store
         self._docx_engine = docx_engine
-        self._ollama = (ollama_base_url, ollama_model, ollama_timeout_seconds)
+        self._gateway = gateway or NoopGateway()
         if store:
             for document in store.load_all():
                 documents.add(document)
@@ -81,12 +80,11 @@ class DocumentService:
         )
 
     def get_clauses(self, document_id: str, method: str = "manual") -> DocumentClausesData:
-        """List the clauses in a document. manual = plain code; llm = local Ollama (checked against the text)."""
+        """List the clauses in a document. manual = plain code; llm = through the LLM gateway (checked against the text)."""
         if method not in METHODS:
             raise UnprocessableError("INVALID_METHOD", "method must be 'manual' or 'llm'")
         document = self._find(document_id)
-        base_url, model, timeout = self._ollama
-        result = extract_clauses(document.pages, method, base_url=base_url, model=model, timeout_seconds=timeout)
+        result = extract_clauses(document.pages, method, gateway=self._gateway)
 
         clauses = []
         for item in result["clauses"]:

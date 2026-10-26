@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import MutableMapping
 
@@ -51,12 +51,13 @@ class Settings:
     # tried before the upload endpoint exists. Turn off in real environments.
     seed_sample_document: bool = True
 
-    # Optional LLM fallback for ambiguous clauses. "none" (default) or "ollama".
+    # LLM provider for ambiguous clauses and clause extraction: "none" (default) or "openai".
     llm_provider: str = "none"
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1"  # free, runs locally; 8B build is ~4.9 GB
-    ollama_timeout_seconds: float = 120.0
-    ollama_num_ctx: int = 4096
+    openai_api_key: str = field(default="", repr=False)  # never printed
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_seconds: float = 60.0
+    openai_max_retries: int = 2
 
     # Uploaded documents: "" keeps them in memory only. A folder name also saves them on disk
     # and reloads them at startup.
@@ -78,10 +79,11 @@ class Settings:
             default_playbook_id=os.getenv("DEFAULT_PLAYBOOK_ID", "NDA-BASELINE"),
             seed_sample_document=_env_bool("SEED_SAMPLE_DOCUMENT", True),
             llm_provider=os.getenv("LLM_PROVIDER", "none").strip().lower(),
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1"),
-            ollama_timeout_seconds=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")),
-            ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "4096")),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip(),
+            openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
+            openai_timeout_seconds=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60")),
+            openai_max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
             document_storage_dir=os.getenv("DOCUMENT_STORAGE_DIR", "").strip(),
             docx_engine=os.getenv("DOCX_ENGINE", "python").strip().lower(),
             env_file_loaded=str(env_path) if loaded else None,

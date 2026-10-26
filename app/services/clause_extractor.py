@@ -1,17 +1,15 @@
-"""Clause extraction for a stored document: `manual` (plain code) or `llm` (local Ollama).
+"""Clause extraction for a stored document: `manual` (plain code) or `llm` (through the LLM gateway).
 
 Merged in from the extraction prototype. manual reads "Clause N — Heading" lines and needs no model.
-llm asks Ollama for clauses and then checks that every returned clause is copied word for word from
+llm asks the LLM for clauses and then checks that every returned clause is copied word for word from
 the document, so the model cannot invent text. Document text is treated as data, never as instructions.
 """
 import json
 import re
-import urllib.error
-import urllib.request
-
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.core.exceptions import AppError, UnprocessableError
+from app.llm.gateway import LLMError, LLMGateway
 from app.repositories.document_repo import PageText
 
 HEADING_PATTERN = re.compile(
@@ -118,7 +116,7 @@ def extract_manual(pages: list[PageText]) -> dict:
 
 # ---- llm -------------------------------------------------------------------------------------
 
-def extract_with_llm(pages: list[PageText], base_url: str, model: str, timeout_seconds: float) -> dict:
+def extract_with_llm(pages: list[PageText], gateway: LLMGateway) -> dict:
     pages = _usable_pages(pages)
 
     # One searchable string, remembering where each page starts and ends.
@@ -136,7 +134,7 @@ def extract_with_llm(pages: list[PageText], base_url: str, model: str, timeout_s
     if len(source) > MAX_LLM_INPUT_CHARS:
         raise UnprocessableError("DOCUMENT_TOO_LONG", "The document is too long for LLM clause extraction. Use method=manual.")
 
-    parsed = _call_ollama(pages, base_url, model, timeout_seconds)
+    parsed = _call_llm(pages, gateway)
 
     clauses, warnings, search_from = [], [], 0
     for index, item in enumerate(parsed.clauses, start=1):
@@ -169,50 +167,23 @@ def extract_with_llm(pages: list[PageText], base_url: str, model: str, timeout_s
     return {"method": "llm", "clauses": clauses, "warnings": warnings}
 
 
-def _call_ollama(pages: list[PageText], base_url: str, model: str, timeout_seconds: float) -> ModelClauseResponse:
-    payload = {
-        "model": model,
-        "stream": False,
-        "think": False,
-        "messages": [
-            {"role": "system", "content": INSTRUCTIONS},
-            {"role": "user", "content": json.dumps({"pages": [{"page": p.page, "text": p.text} for p in pages]}, ensure_ascii=False)},
-        ],
-        "format": ModelClauseResponse.model_json_schema(),
-        "options": {"temperature": 0, "seed": 42, "num_ctx": 8192},
-    }
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/api/chat",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # local server: ignore proxy settings
+def _call_llm(pages: list[PageText], gateway: LLMGateway) -> ModelClauseResponse:
+    user = json.dumps({"pages": [{"page": p.page, "text": p.text} for p in pages]}, ensure_ascii=False)
     try:
-        with opener.open(request, timeout=timeout_seconds) as response:
-            body = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        raise AppError(502, "OLLAMA_REQUEST_FAILED", f"Ollama returned HTTP {exc.code}. Check the model name (OLLAMA_MODEL).") from None
-    except TimeoutError:
-        raise AppError(504, "OLLAMA_TIMEOUT", "The local model timed out. Try a shorter document.") from None
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise AppError(504, "OLLAMA_TIMEOUT", "The local model timed out. Try a shorter document.") from None
-        raise AppError(503, "OLLAMA_UNAVAILABLE", "Cannot connect to Ollama. Check that it is running.") from None
-    except (OSError, json.JSONDecodeError):
-        raise AppError(502, "OLLAMA_CONNECTION_ERROR", "The connection to Ollama failed.") from None
-
-    if body.get("done_reason") == "length":
-        raise AppError(502, "MODEL_OUTPUT_TRUNCATED", "The model response was cut short.")
+        reply = gateway.chat_json(
+            INSTRUCTIONS, user, ModelClauseResponse.model_json_schema(), schema_name="clause_list", max_output_tokens=8192
+        )
+    except LLMError as exc:
+        raise AppError(exc.status, exc.code, exc.message) from None
     try:
-        return ModelClauseResponse.model_validate_json(body["message"]["content"])
-    except (KeyError, TypeError, ValueError, ValidationError):
-        raise AppError(502, "INVALID_MODEL_OUTPUT", "Ollama did not return the expected clause JSON.") from None
+        return ModelClauseResponse.model_validate_json(reply)
+    except (ValueError, ValidationError):
+        raise AppError(502, "INVALID_MODEL_OUTPUT", "The LLM did not return the expected clause JSON.") from None
 
 
-def extract_clauses(pages: list[PageText], method: str, *, base_url: str, model: str, timeout_seconds: float) -> dict:
+def extract_clauses(pages: list[PageText], method: str, *, gateway: LLMGateway) -> dict:
     if method == "manual":
         return extract_manual(pages)
     if method == "llm":
-        return extract_with_llm(pages, base_url, model, timeout_seconds)
+        return extract_with_llm(pages, gateway)
     raise UnprocessableError("INVALID_METHOD", "method must be 'manual' or 'llm'")
