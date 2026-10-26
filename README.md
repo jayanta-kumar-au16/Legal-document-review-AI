@@ -19,7 +19,8 @@ uvicorn app.main:app --reload          # docs at http://127.0.0.1:8000/docs
 python -m unittest discover -s tests -t . -v
 ```
 
-A fictional sample NDA is seeded as `doc_sample_nda` (set `SEED_SAMPLE_DOCUMENT=false` to disable).
+Two fictional sample NDAs are seeded: `doc_sample_nda` (all clauses clear) and `doc_sample_unclear_nda`
+(one unclear clause, for the LLM). Set `SEED_SAMPLE_DOCUMENT=false` to disable.
 
 ```bash
 curl -X POST localhost:8000/api/reviews -H 'content-type: application/json' \
@@ -65,6 +66,22 @@ config/playbooks/    nda_baseline.json   <- rules, keywords, thresholds
 tests/
 ```
 
+## Upload, text and clause extraction (merged from the extraction prototype)
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/documents` | Multipart `file` (PDF or DOCX, 10 MB). Extracts the text and returns a `document_id`. |
+| `GET /api/documents/{id}/text` | Page text and the section list (used by the UI preview). |
+| `GET /api/documents/{id}/clauses?method=manual` | Lists clauses from `Clause N — Heading` lines. Plain code, no model. |
+| `GET /api/documents/{id}/clauses?method=llm` | Asks local Ollama for clauses. Any clause that is not copied word for word from the document is rejected (`UNVERIFIED_CLAUSE`). |
+
+Optional settings (`.env`):
+
+- `DOCX_ENGINE=libreoffice` converts DOCX to PDF first so Word files get page numbers. It needs LibreOffice (`LIBREOFFICE_PATH`, or `soffice` on PATH). If it is missing or fails, the upload still works through python-docx and returns a warning.
+- `DOCUMENT_STORAGE_DIR=data/documents` also saves each upload to disk (`original.*`, `extracted.json`, `clauses_<method>.json`) and reloads them at startup. Reviews are still kept in memory only.
+
+Every response carries an `X-Request-ID` header.
+
 ## Hooking up the upload endpoint
 
 The upload developer only has to store the extracted text:
@@ -92,6 +109,10 @@ ollama pull llama3.1                    # once; needs a recent Ollama (JSON-sche
 LLM_PROVIDER=ollama uvicorn app.main:app --reload
 ```
 
+Instead of setting terminal variables, you can put them in a `.env` file in the project folder
+(copy `.env.example` to `.env`). Real environment variables win over the file. On startup the uvicorn
+console prints `LLM provider = ...` and which `.env` was found, so you can see at once whether it is on.
+
 | Env var | Default |
 |---|---|
 | `LLM_PROVIDER` | `none` (or `ollama`) |
@@ -106,6 +127,21 @@ When it is used: only for (1) an ambiguous clause, and (2) a rule with `"llm_on_
 quote a sentence that exists in the clause; otherwise it is rejected and the rule goes to human review
 with a warning (`LLM_ERROR`, `LLM_INVALID_OUTPUT`, `EVIDENCE_UNVERIFIED`). The sample NDA makes 0 LLM calls.
 `metadata.llm_calls`, `model` and `prompt_version` are recorded in every review.
+
+### How to tell Ollama is working
+
+1. `GET /health` -> `data.llm` shows the provider, the model, and for Ollama whether it is reachable and
+   whether the model is downloaded:
+   `{"provider": "ollama", "configured": true, "model": "llama3.1", "reachable": true, "model_available": true}`.
+   `reachable: false` means Ollama is not running; `model_available: false` means run `ollama pull llama3.1`.
+   `provider: "none"` means `LLM_PROVIDER` was not set before the server started.
+2. Review the seeded document with one unclear clause: `POST /api/reviews` with
+   `{"document_id": "doc_sample_unclear_nda"}`, then `GET` the report. When Ollama is used, R1 shows
+   `method: "llm"`, `metadata.llm_calls` is 1 and `metadata.model` is `llama3.1`.
+   Without Ollama the same document gives R1 `review_required` plus a `LLM_NOT_CONFIGURED` warning.
+   (`doc_sample_nda` never needs the LLM, so `llm_calls` stays 0 there.)
+3. `python try_ollama.py` does the same check without the HTTP server.
+4. While a review runs, `ollama ps` lists the loaded model.
 
 An 8B model is weaker than hosted models: expect misses and wrong verdicts on tricky clauses, and
 some answers rejected for imperfect quotes. Measure it on the golden set before relying on it.

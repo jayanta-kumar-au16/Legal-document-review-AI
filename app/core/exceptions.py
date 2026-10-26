@@ -27,5 +27,15 @@ class UnprocessableError(AppError):
         super().__init__(422, code, message, details)
 
 
+class UnsupportedMediaError(AppError):
+    def __init__(self, code: str, message: str, details: Any = None):
+        super().__init__(415, code, message, details)
+
+
+class PayloadTooLargeError(AppError):
+    def __init__(self, code: str, message: str, details: Any = None):
+        super().__init__(413, code, message, details)
+
+
 class PlaybookConfigError(Exception):
     """Raised at startup when a playbook JSON file is invalid. Never swallowed."""

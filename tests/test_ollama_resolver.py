@@ -25,6 +25,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def do_GET(self):  # Ollama's model list: GET /api/tags
+        data = json.dumps(self.server.tags).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def log_message(self, *args):  # keep test output quiet
         pass
 
@@ -38,6 +46,7 @@ class OllamaTestCase(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.requests, self.server.reply = [], chat_reply()
+        self.server.tags = {"models": [{"name": "llama3.1:latest"}]}
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.resolver = OllamaResolver(self.url, "llama3.1", timeout_seconds=5)
@@ -105,6 +114,53 @@ class EndToEndTests(OllamaTestCase):
         r2 = next(r for r in after.rule_results if r.rule_id == "R2")
         self.assertEqual((r2.outcome, r2.method), ("pass", "llm"))
         self.assertEqual(len(self.server.requests), 1)  # R3 (policy) and others did not escalate
+
+
+class UnclearSampleTests(OllamaTestCase):
+    """The seeded `doc_sample_unclear_nda` exists so the LLM path can be tried through the API."""
+
+    QUOTE = "The Receiving Party will keep everything the Disclosing Party shares secret and will not pass it to anyone else."
+
+    def outcomes(self, report):
+        return {r.rule_id: (r.outcome, r.method) for r in report.rule_results}
+
+    def test_without_llm_only_r1_is_unresolved(self):
+        report = make_container().review_service.create_review("doc_sample_unclear_nda")
+        self.assertEqual(
+            self.outcomes(report),
+            {"R1": ("review_required", "deterministic"), "R2": ("pass", "deterministic"),
+             "R3": ("review_required", "deterministic"), "R4": ("pass", "deterministic"),
+             "R5": ("pass", "deterministic")},
+        )
+        self.assertEqual(report.metadata.llm_calls, 0)
+
+    def test_with_ollama_only_r1_goes_to_the_llm(self):
+        self.server.reply = chat_reply("pass", "Keeps information secret and bars disclosure", self.QUOTE)
+        container = make_container(resolver=self.resolver)
+        report = container.review_service.create_review("doc_sample_unclear_nda")
+        self.assertEqual(self.outcomes(report)["R1"], ("pass", "llm"))
+        self.assertEqual(report.metadata.llm_calls, 1)
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual(report.metadata.rules_resolved_without_llm, 4)
+
+
+class StatusTests(OllamaTestCase):
+    def test_check_reports_reachable_and_model_available(self):
+        self.assertEqual(self.resolver.check(), {"reachable": True, "model_available": True})
+
+    def test_check_reports_missing_model(self):
+        self.server.tags = {"models": [{"name": "mistral:latest"}]}
+        self.assertEqual(self.resolver.check(), {"reachable": True, "model_available": False})
+
+    def test_check_reports_ollama_down(self):
+        down = OllamaResolver("http://127.0.0.1:1", "llama3.1")
+        self.assertEqual(down.check(timeout_seconds=2), {"reachable": False, "model_available": False})
+
+    def test_llm_status_for_health_endpoint(self):
+        self.assertEqual(make_container().llm_status(), {"provider": "none", "configured": False})
+        status = make_container(resolver=self.resolver).llm_status()
+        self.assertEqual(status, {"provider": "ollama", "configured": True, "model": "llama3.1",
+                                  "reachable": True, "model_available": True})
 
 
 class FailureTests(OllamaTestCase):

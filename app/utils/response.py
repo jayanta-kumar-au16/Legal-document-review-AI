@@ -1,6 +1,7 @@
 from typing import Any
 
-from fastapi.responses import JSONResponse
+# Same class FastAPI re-exports as fastapi.responses.JSONResponse.
+from starlette.responses import JSONResponse
 
 
 def success_response(data: Any, message: str = "OK", status_code: int = 200) -> dict:

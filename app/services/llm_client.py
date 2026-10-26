@@ -27,6 +27,7 @@ class ClauseResolver(Protocol):
 
 class NoopResolver:
     configured = False
+    provider = "none"
     model = None
     prompt_version = None
 

@@ -16,6 +16,8 @@ class StoredDocument(BaseModel):
     file_name: str
     extraction_status: Literal["success", "failed"]
     pages: list[PageText] = Field(default_factory=list)
+    file_type: str | None = None  # "pdf" | "docx" (None for seeded samples)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DocumentRepository(Protocol):
